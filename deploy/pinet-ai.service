@@ -1,0 +1,15 @@
+[Unit]
+Description=PiNet AI Offline Knowledge Server
+After=network.target
+
+[Service]
+Type=simple
+User=sudh
+WorkingDirectory=/home/sudh/PiNet-AI-starter/pinet-ai
+ExecStart=/usr/bin/python3 /home/sudh/PiNet-AI-starter/pinet-ai/app.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
