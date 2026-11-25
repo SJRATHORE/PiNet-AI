@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PiNet AI v0.2: a lightweight, source-grounded offline question-answer portal.
+"""PiNet AI v0.3: a lightweight, source-grounded offline question-answer portal.
 
 Uses Python standard library and SQLite FTS5; does NOT run a language model.
 """
@@ -26,15 +26,77 @@ def connect():
     return sqlite3.connect(DB, timeout=10)
 
 
+def split_passages(content, suffix, max_chars=900):
+    """Yield (heading, passage). Break at headings/paragraphs, then long text.
+
+    This is deterministic and needs no external libraries or AI model.
+    """
+    heading = "Introduction"
+    buffer = []
+    size = 0
+
+    def emit():
+        nonlocal buffer, size
+        if buffer:
+            result = (heading, "\n".join(buffer))
+            buffer, size = [], 0
+            return result
+        return None
+
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line:
+            item = emit()
+            if item:
+                yield item
+            continue
+        if suffix == '.md' and re.match(r'^#{1,6}\s+', line):
+            item = emit()
+            if item:
+                yield item
+            heading = re.sub(r'^#{1,6}\s+', '', line).strip()[:150] or 'Untitled'
+            continue
+        # Split unusually long lines into bounded passages at word boundaries.
+        words = line.split()
+        parts = []
+        piece = ''
+        for word in words:
+            if piece and len(piece) + 1 + len(word) > max_chars:
+                parts.append(piece)
+                piece = ''
+            if len(word) > max_chars:
+                if piece:
+                    parts.append(piece)
+                    piece = ''
+                parts.extend(word[i:i + max_chars] for i in range(0, len(word), max_chars))
+            else:
+                piece = f'{piece} {word}'.strip()
+        if piece:
+            parts.append(piece)
+        for part in parts:
+            if size and size + len(part) + 1 > max_chars:
+                item = emit()
+                if item:
+                    yield item
+            buffer.append(part)
+            size += len(part) + 1
+    item = emit()
+    if item:
+        yield item
+
+
 def initialize():
     KNOWLEDGE.mkdir(exist_ok=True)
     with closing(connect()) as cx, cx:
-        cx.execute('CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(title, content)')
-        cx.execute('DELETE FROM documents')
+        # Rebuild index on startup; compatible with previous v0.2 database schema.
+        cx.execute('DROP TABLE IF EXISTS documents')
+        cx.execute('CREATE VIRTUAL TABLE documents USING fts5(title, section, content)')
         for file in sorted(KNOWLEDGE.iterdir()):
             if file.is_file() and file.suffix.lower() in ('.txt', '.md') and file.stat().st_size < 2_000_000:
-                cx.execute('INSERT INTO documents(title, content) VALUES (?, ?)',
-                           (file.name, file.read_text(encoding='utf-8', errors='replace')))
+                content = file.read_text(encoding='utf-8', errors='replace')
+                for section, passage in split_passages(content, file.suffix.lower()):
+                    cx.execute('INSERT INTO documents(title, section, content) VALUES (?, ?, ?)',
+                               (file.name, section, passage))
 
 
 def terms(question):
@@ -48,7 +110,7 @@ def find_documents(question):
         return []
     query = ' OR '.join('"' + w.replace('"', '') + '"' for w in words)
     with closing(connect()) as cx:
-        return cx.execute('SELECT title, content FROM documents WHERE documents MATCH ? '
+        return cx.execute('SELECT title, section, content FROM documents WHERE documents MATCH ? '
                           'ORDER BY bm25(documents) LIMIT 5', (query,)).fetchall()
 
 
@@ -58,7 +120,7 @@ def answer(question):
     if not keywords:
         return ('Please ask a more specific question, such as “What is DNS?”', [])
     candidates = []
-    for rank, (title, content) in enumerate(find_documents(question)):
+    for rank, (title, section, content) in enumerate(find_documents(question)):
         for sentence in re.split(r'(?<=[.!?])\s+|\n+', content):
             sentence = sentence.strip().lstrip('#').strip()
             if len(sentence) < 18:
@@ -66,18 +128,19 @@ def answer(question):
             text_words = set(re.findall(r'\w+', sentence.casefold()))
             score = len(keywords & text_words)
             if score:
-                candidates.append((score, -rank, title, sentence))
+                candidates.append((score, -rank, title, section, sentence))
     if not candidates:
         return ('I couldn’t find a supported answer in my offline library. Try a different question or add a relevant .md or .txt file to the knowledge folder.', [])
     candidates.sort(reverse=True)
     chosen = candidates[:2]
     excerpts = []
     sources = []
-    for _score, _rank, title, sentence in chosen:
+    for _score, _rank, title, section, sentence in chosen:
         if sentence not in excerpts:
             excerpts.append(sentence[:650])
-        if title not in sources:
-            sources.append(title)
+        source = title if section == 'Introduction' else f'{title} — {section}'
+        if source not in sources:
+            sources.append(source)
     return (' '.join(excerpts), sources)
 
 
@@ -100,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
             if sources:
                 discussion += '<div class="source">Source: ' + html.escape(', '.join(sources)) + '</div>'
             discussion += '</div></div>'
-        page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PiNet AI — Offline Assistant</title><style>{CSS}</style></head><body><main><span class="pill">● OFFLINE • LOCAL NETWORK</span><h1>PiNet AI</h1><p>Ask about the documents stored on this Raspberry Pi. Answers are extracted from your offline library—not generated by a language model.</p>{discussion}<form action="/chat" method="get"><input name="q" maxlength="300" placeholder="Ask about DNS, SSH, TCP, networking…" aria-label="Ask the offline assistant" required autofocus><button type="submit">Ask</button></form><p>Try: <a href="/chat?q=What+is+DNS%3F">What is DNS?</a> · <a href="/chat?q=What+does+DHCP+do%3F">What does DHCP do?</a></p><footer>PiNet AI v0.2 • Source-grounded document answers • No internet or API required<br>Everyone connected to this hotspot can access the portal. Do not store private documents here.</footer></main></body></html>'''
+        page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PiNet AI — Offline Assistant</title><style>{CSS}</style></head><body><main><span class="pill">● OFFLINE • LOCAL NETWORK</span><h1>PiNet AI</h1><p>Ask about the documents stored on this Raspberry Pi. Answers are extracted from your offline library—not generated by a language model.</p>{discussion}<form action="/chat" method="get"><input name="q" maxlength="300" placeholder="Ask about DNS, SSH, TCP, networking…" aria-label="Ask the offline assistant" required autofocus><button type="submit">Ask</button></form><p>Try: <a href="/chat?q=What+is+DNS%3F">What is DNS?</a> · <a href="/chat?q=What+does+DHCP+do%3F">What does DHCP do?</a></p><footer>PiNet AI v0.3 • Source-grounded document answers • No internet or API required<br>Everyone connected to this hotspot can access the portal. Do not store private documents here.</footer></main></body></html>'''
         self.respond(200, 'text/html; charset=utf-8', page)
 
     def respond(self, status, content_type, text):

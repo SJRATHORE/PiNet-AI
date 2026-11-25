@@ -23,5 +23,23 @@ class KnowledgeTests(unittest.TestCase):
                 self.assertIn('couldn’t find', missing)
                 self.assertEqual(sources, [])
 
+    def test_markdown_sections_are_cited(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            (folder / 'knowledge').mkdir()
+            (folder / 'knowledge' / 'guide.md').write_text(
+                '# Networking\n## DNS\nDNS translates domain names into IP addresses.\n'
+                '## DHCP\nDHCP assigns network addresses to clients.\n', encoding='utf-8')
+            with patch.object(app, 'KNOWLEDGE', folder / 'knowledge'), patch.object(app, 'DB', folder / 'index.db'):
+                app.initialize()
+                reply, sources = app.answer('What is DNS?')
+                self.assertIn('DNS translates', reply)
+                self.assertIn('guide.md — DNS', sources)
+
+    def test_long_documents_split_into_small_passages(self):
+        passages = list(app.split_passages(' '.join(['network'] * 400), '.txt', max_chars=100))
+        self.assertGreater(len(passages), 1)
+        self.assertTrue(all(len(text) <= 100 for _section, text in passages))
+
 if __name__ == '__main__':
     unittest.main()
