@@ -1,59 +1,81 @@
-# PiNet AI v0.1 (Raspberry Pi 3 A+)
+# PiNet AI
 
-Offline knowledge search portal. Runs entirely with Python standard library and SQLite FTS5; it is **not yet a generative AI chatbot**.
+A lightweight, offline Wi-Fi knowledge portal for Raspberry Pi. Connect to the **PiNet** hotspot and ask questions against locally stored documents, without internet access.
 
-## Start
+> **Current release: v0.2.** This is an **extractive, source-grounded question-answer system**, not a generative LLM. It returns excerpts from local documents; it does not invent new answers or maintain conversation memory.
 
-On Raspberry Pi OS Lite (Bookworm/Trixie), from this folder:
+## Features
 
-```sh
+- Standalone Raspberry Pi Wi-Fi hotspot (after configuration)
+- Local web-based question-answer interface, accessible from a browser
+- Offline `.md` / `.txt` knowledge library indexed with SQLite FTS5
+- Health endpoint at `/health`
+- Python standard library only; no cloud API required
+- Background startup using systemd
+
+## Hardware and requirements
+
+- Tested on Raspberry Pi 3 Model A+ (512 MB RAM) with Raspberry Pi OS Lite
+- Python 3 with SQLite FTS5 support
+- NetworkManager (`nmcli`) for the optional hotspot configuration
+- A microSD card and stable power supply
+
+## Try it on your workstation
+
+```bash
+python -m unittest discover -s tests -v
+python app.py
+```
+
+Open `http://localhost:8080`, or verify `http://localhost:8080/health` returns `OK`.
+
+## Run it on the Pi
+
+Copy this repository to the Pi, then from the repository directory:
+
+```bash
 python3 app.py
 ```
 
-Visit `http://PI_IP:8080` on a device on the same network. Test locally with `curl http://localhost:8080/health`.
+Open `http://<PI_IP>:8080` on a device connected to the same network. To run it on boot, follow [deployment instructions](docs/deployment.md).
 
-Add UTF-8 `.txt` or `.md` files to `knowledge/`, and restart the app to rebuild the index.
+## Offline hotspot
 
-## Hotspot
+To create the independent `PiNet` Wi-Fi network, follow [hotspot setup and recovery](docs/hotspot-setup.md). **Hotspot activation can interrupt SSH over Wi-Fi**. Prepare a physical recovery method first.
 
-**Warning:** the next command disconnects the Pi from its current Wi-Fi. If your SSH session uses Wi-Fi, you will lose it. Arrange alternate access/recovery first or have a display/keyboard available.
+The example hotspot uses `10.42.0.1/24`. Once it is active, connect to `PiNet` and open `http://10.42.0.1:8080`.
 
-```sh
-sudo nmcli device wifi hotspot ifname wlan0 ssid PiNet password 'REPLACE-WITH-A-STRONG-PASSWORD'
-ip -4 address show wlan0
+## Knowledge library
+
+Add UTF-8 `.md` or `.txt` files to `knowledge/`. Restart `pinet-ai.service` (or `app.py`) to rebuild the search index. The current app indexes individual files smaller than 2 MB and searches the indexed text. **All hotspot clients can access the contents returned by the site, so do not add confidential documents.**
+
+## Architecture
+
+See [architecture](docs/architecture.md) for the service diagram and operating limits.
+
+## Security notes
+
+- Use a strong hotspot password, and never commit credentials, private SSH keys, or live NetworkManager profiles.
+- The portal has **no user authentication**. Only use it on a trusted local network; do not forward its port to the internet.
+- `knowledge.db` is a generated index and should remain ignored by Git.
+
+## Development
+
+```bash
+git switch -c feature/my-change
+python -m unittest discover -s tests -v
 ```
 
-Connect phone/laptop to `PiNet`, and open `http://PI_HOTSPOT_IP:8080`, usually `http://10.42.0.1:8080`. Read `ip -4 address show wlan0` to confirm; don't assume this address.
+Commit tested changes on a feature branch and merge into `main`. Windows can be your development workstation while the Pi is the deployment machine.
 
-Check hotspot: `nmcli connection show --active`.
+## Roadmap
 
-Restore normal Wi-Fi: `sudo nmcli connection down Hotspot` (connection name may differ; inspect `nmcli connection show`), then `sudo nmcli device wifi connect 'YOUR_HOME_SSID' password 'YOUR_HOME_WIFI_PASSWORD'`.
+- **v0.1**: Offline knowledge search portal
+- **v0.2**: Extractive, source-backed question-answer interface
+- **Next**: Better indexing and citations, safer deployment automation, and experiments with tiny local language models
 
-## Autostart (optional)
+## Documentation
 
-Replace `YOUR_USERNAME` with your actual Linux username. Put the project at `/home/YOUR_USERNAME/pinet-ai`.
-
-```ini
-[Unit]
-Description=PiNet offline knowledge portal
-After=network.target
-
-[Service]
-User=YOUR_USERNAME
-WorkingDirectory=/home/YOUR_USERNAME/pinet-ai
-ExecStart=/usr/bin/python3 /home/YOUR_USERNAME/pinet-ai/app.py
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Save at `/etc/systemd/system/pinet-ai.service` and run:
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now pinet-ai
-sudo systemctl status pinet-ai
-```
-
-Security: only share the hotspot password with trusted users. This starter portal has no login/authentication. Don't put sensitive documents on it or expose port 8080 to the public internet.
+- [System overview](docs/architecture.md)
+- [Wi-Fi hotspot setup, testing, and recovery](docs/hotspot-setup.md)
+- [Application deployment and troubleshooting](docs/deployment.md)
